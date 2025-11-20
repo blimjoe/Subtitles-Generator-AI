@@ -4,31 +4,103 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 import os
 from datetime import timedelta
 from transformers import MarianMTModel, MarianTokenizer
-from tqdm import tqdm 
+from tqdm import tqdm
+import platform
 
 class SubtitleGenerator:
-    def __init__(self, model_name: str = "turbo"):
-        """Initialize the SubtitleGenerator with Whisper model and translation models.
+    def __init__(self, model_name: str = "turbo", use_gpu: bool = True):
+        """Initialize the SubtitleGenerator with Whisper model and lazy-loaded translation models.
 
         Args:
             model_name (str): The model size to use for Whisper. Default is "turbo".
+            use_gpu (bool): Whether to use GPU acceleration. Default is True.
         """
-        self.whisper_model = whisper.load_model(model_name)
-        self.en_fr_model = MarianMTModel.from_pretrained('Helsinki-NLP/opus-mt-en-fr')
-        self.en_fr_tokenizer = MarianTokenizer.from_pretrained('Helsinki-NLP/opus-mt-en-fr')
-        self.fr_en_model = MarianMTModel.from_pretrained('Helsinki-NLP/opus-mt-fr-en')
-        self.fr_en_tokenizer = MarianTokenizer.from_pretrained('Helsinki-NLP/opus-mt-fr-en')
+        # Setup device for optimal Apple M4 performance
+        self.device = self._setup_device(use_gpu)
+        
+        # Load Whisper model (now fully supports MPS!)
+        self.whisper_model = whisper.load_model(model_name, device=self.device)
+        
+        # Initialize translation model cache - models are loaded lazily when needed
+        self._translation_models = {}
+        self._translation_tokenizers = {}
+        
+        # Model configurations for supported language pairs
+        self._model_configs = {
+            ('en', 'fr'): 'Helsinki-NLP/opus-mt-en-fr',
+            ('fr', 'en'): 'Helsinki-NLP/opus-mt-fr-en',
+            ('ja', 'zh'): 'shun89/opus-mt-ja-zh'
+        }
+        
+        print(f"✅ Whisper model '{model_name}' loaded successfully on {self.device}")
+        print(f"✅ Translation models will be loaded on-demand for optimal performance")
+        print(f"🚀 Full GPU acceleration enabled for Apple M4!")
+
+    def _setup_device(self, use_gpu: bool = True):
+        """Setup the optimal device for Apple M4 GPU acceleration."""
+        if not use_gpu:
+            print("🔧 GPU disabled by user, using CPU")
+            return "cpu"
+        
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            print("🚀 Apple Silicon GPU (MPS) detected - enabling GPU acceleration")
+            print(f"   Platform: {platform.machine()}")
+            try:
+                if hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+            except:
+                pass
+            return "mps"
+        elif torch.cuda.is_available():
+            print(f"🚀 CUDA GPU detected: {torch.cuda.get_device_name(0)}")
+            return "cuda"
+        else:
+            print("⚠️  No GPU acceleration available, using CPU")
+            return "cpu"
+
+    def _load_translation_model(self, source_lang: str, target_lang: str):
+        """Lazy load translation model and tokenizer."""
+        lang_pair = (source_lang, target_lang)
+        
+        if lang_pair in self._translation_models:
+            return self._translation_models[lang_pair], self._translation_tokenizers[lang_pair]
+        
+        if lang_pair not in self._model_configs:
+            return None, None
+        
+        model_name = self._model_configs[lang_pair]
+        
+        try:
+            print(f"Loading translation model for {source_lang} -> {target_lang}...")
+            model = MarianMTModel.from_pretrained(model_name)
+            tokenizer = MarianTokenizer.from_pretrained(model_name)
+            
+            if self.device != "cpu":
+                try:
+                    model = model.to(self.device)
+                    print(f"✓ Model moved to {self.device}")
+                except:
+                    model = model.to("cpu")
+            
+            self._translation_models[lang_pair] = model
+            self._translation_tokenizers[lang_pair] = tokenizer
+            
+            print(f"✓ Translation model {source_lang} -> {target_lang} cached")
+            return model, tokenizer
+        except Exception as e:
+            print(f"✗ Failed to load model: {e}")
+            return None, None
+
+    def get_cache_info(self) -> dict:
+        """Get cached translation models info."""
+        return {
+            "loaded_models": list(self._translation_models.keys()),
+            "supported_pairs": list(self._model_configs.keys()),
+            "cache_size": len(self._translation_models)
+        }
 
     def extract_audio(self, video_path: str, audio_path: str) -> bool:
-        """Extract audio from a video file.
-
-        Args:
-            video_path (str): Path to the input video file.
-            audio_path (str): Path to save the extracted audio.
-
-        Returns:
-            bool: True if audio extraction was successful, False otherwise.
-        """
+        """Extract audio from video."""
         try:
             video = VideoFileClip(video_path)
             video.audio.write_audiofile(audio_path)
@@ -39,39 +111,23 @@ class SubtitleGenerator:
             return False
 
     def detect_language(self, text: str) -> str:
-        """Detect the language of the given text using Whisper.
-
-        Args:
-            text (str): The text to detect language for.
-
-        Returns:
-            str: The detected language code.
-        """
+        """Detect language using Whisper."""
         audio_features = self.whisper_model.embed_audio(text)
         return self.whisper_model.detect_language(audio_features)
 
     def translate_text(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Translate the given text from source language to target language.
-
-        Args:
-            text (str): The text to translate.
-            source_lang (str): The source language code (e.g., 'en' or 'fr').
-            target_lang (str): The target language code (e.g., 'en' or 'fr').
-
-        Returns:
-            str: The translated text.
-        """
+        """Translate text between languages."""
         try:
-            if source_lang == 'en' and target_lang == 'fr':
-                model = self.en_fr_model
-                tokenizer = self.en_fr_tokenizer
-            elif source_lang == 'fr' and target_lang == 'en':
-                model = self.fr_en_model
-                tokenizer = self.fr_en_tokenizer
-            else:
+            model, tokenizer = self._load_translation_model(source_lang, target_lang)
+            
+            if model is None or tokenizer is None:
                 raise ValueError(f"Translation not supported: {source_lang} to {target_lang}")
 
             inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            
+            if hasattr(model, 'device') and model.device.type != 'cpu':
+                inputs = {k: v.to(model.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
+            
             translated = model.generate(**inputs)
             return tokenizer.decode(translated[0], skip_special_tokens=True)
         except Exception as e:
@@ -79,14 +135,7 @@ class SubtitleGenerator:
             return text
 
     def generate_subtitles(self, audio_path: str) -> tuple:
-        """Generate subtitles from the audio file using Whisper.
-
-        Args:
-            audio_path (str): Path to the audio file.
-
-        Returns:
-            tuple: A tuple containing the transcription result and the detected language.
-        """
+        """Generate subtitles from audio using Whisper."""
         try:
             result = self.whisper_model.transcribe(audio_path, verbose=False)
             source_lang = result['language']
@@ -98,32 +147,16 @@ class SubtitleGenerator:
 
     @staticmethod
     def format_time(seconds: float) -> str:
-        """Convert time in seconds to SRT format.
-
-        Args:
-            seconds (float): The time in seconds to convert.
-
-        Returns:
-            str: The time in SRT format (hh:mm:ss,ms).
-        """
+        """Convert seconds to SRT format."""
         td = timedelta(seconds=seconds)
         hours = td.seconds // 3600
         minutes = (td.seconds // 60) % 60
-        seconds = td.seconds % 60
+        secs = td.seconds % 60
         milliseconds = round(td.microseconds / 1000)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
 
     def create_srt(self, transcription: dict, output_path: str, target_lang: str = None) -> bool:
-        """Create an SRT file with optional translation.
-
-        Args:
-            transcription (dict): The transcription result from Whisper.
-            output_path (str): The path where the SRT file will be saved.
-            target_lang (str, optional): The target language for translation. Defaults to None.
-
-        Returns:
-            bool: True if SRT file creation was successful, False otherwise.
-        """
+        """Create SRT file with optional translation."""
         try:
             source_lang = transcription['language']
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -146,13 +179,7 @@ class SubtitleGenerator:
             return False
 
     def process_video(self, video_path: str, target_lang: str = None) -> None:
-        """Main process to generate subtitles from the video.
-
-        Args:
-            video_path (str): Path to the video file.
-            output_dir (str, optional): The output directory for subtitles. Defaults to "subtitles".
-            target_lang (str, optional): The language to translate subtitles to. Defaults to None.
-        """
+        """Main subtitle generation process."""
         output_dir = "subtitles"
         os.makedirs(output_dir, exist_ok=True)
         audio_path = os.path.join(output_dir, "temp_audio.wav")

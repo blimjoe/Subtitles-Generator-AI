@@ -134,12 +134,21 @@ class SubtitleGenerator:
             print(f"Error during translation: {str(e)}")
             return text
 
-    def generate_subtitles(self, audio_path: str) -> tuple:
+    def generate_subtitles(self, audio_path: str, source_lang: str = None) -> tuple:
         """Generate subtitles from audio using Whisper."""
         try:
-            result = self.whisper_model.transcribe(audio_path, verbose=False)
-            source_lang = result['language']
-            print(f"Detected language: {source_lang}")
+            if source_lang:
+                # 手动指定语言
+                print(f"Using specified source language: {source_lang}")
+                result = self.whisper_model.transcribe(audio_path, language=source_lang, verbose=False)
+                # 使用指定的语言而不是检测结果
+                result['language'] = source_lang
+            else:
+                # 自动检测语言
+                result = self.whisper_model.transcribe(audio_path, verbose=False)
+                source_lang = result['language']
+                print(f"Auto-detected language: {source_lang}")
+            
             return result, source_lang
         except Exception as e:
             print(f"Error during subtitle generation: {str(e)}")
@@ -178,7 +187,7 @@ class SubtitleGenerator:
             print(f"Error during SRT file creation: {str(e)}")
             return False
 
-    def process_video(self, video_path: str, target_lang: str = None) -> None:
+    def process_video(self, video_path: str, target_lang: str = None, source_lang: str = None) -> None:
         """Main subtitle generation process."""
         output_dir = "subtitles"
         os.makedirs(output_dir, exist_ok=True)
@@ -191,13 +200,13 @@ class SubtitleGenerator:
             return
         
         print("Generating subtitles...")
-        transcription, source_lang = self.generate_subtitles(audio_path)
+        transcription, detected_source_lang = self.generate_subtitles(audio_path, source_lang)
         if transcription is None:
             return
  
         base_name = os.path.splitext(os.path.basename(video_path))[0]
         
-        original_srt = os.path.join(output_dir, f"{base_name}_{source_lang}.srt")
+        original_srt = os.path.join(output_dir, f"{base_name}_{detected_source_lang}.srt")
         self.create_srt(transcription, original_srt)
         print(f"Original subtitles generated: {original_srt}")
         

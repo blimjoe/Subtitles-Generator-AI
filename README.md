@@ -42,14 +42,34 @@ This project provides a tool for automatically generating subtitles for videos, 
 The script can be run from the command line using the following syntax:
 
 ```bash
-python main.py --translate <fr/en> ./path/to/video.<mp4/mkv/avi>
+python main.py [--source_lang <language>] [--translate <fr/en/ja/zh>] ./path/to/video.<mp4/mkv/avi>
 ```
 
 ### Arguments:
 
 - `--model_name`: (Optional) The Whisper model to use. Default is turbo. Available options: `tiny`, `base`, `small`, `medium`, `large`, `turbo`.
 [Choose the model.](https://github.com/openai/whisper?tab=readme-ov-file#available-models-and-languages)
-- `--translate`: (Optional) The language to translate the subtitles to. Options: `fr`, `en` (French, English).
+- `--source_lang`: (Optional) Manually specify the source language of the video (e.g., en, zh, ja, fr, de, es, etc.). If not specified, the language will be auto-detected by Whisper.
+- `--translate`: (Optional) The language to translate the subtitles to. Options: `fr`, `en`, `ja`, `zh` (French, English, Japanese, Chinese).
+
+### Examples:
+
+```bash
+# Auto-detect language and generate subtitles only
+python main.py video.mp4
+
+# Specify source language as Chinese and generate subtitles
+python main.py --source_lang zh video.mp4
+
+# Auto-detect language and translate to English
+python main.py --translate en video.mp4
+
+# Specify source as Japanese and translate to Chinese
+python main.py --source_lang ja --translate zh video.mp4
+
+# Use large model with manual language specification
+python main.py --model_name large --source_lang fr --translate en video.mp4
+```
 
 ### Output
 The generated subtitle files will be saved in a folder named `subtitles`, containing:
